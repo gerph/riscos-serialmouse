@@ -1,0 +1,28 @@
+/*******************************************************************
+ * File:        protocol
+ * Purpose:     Decoding interface for Microsoft and Mouse Systems reports.
+ * Author:      Gerph
+ ******************************************************************/
+
+#ifndef SERMOUSE2_PROTOCOL_H
+#define SERMOUSE2_PROTOCOL_H
+
+#include <stdint.h>
+
+/*******************************************************************
+ Function:      protocol_reset
+ Description:   Resets the report state machine and accumulated mouse data.
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void protocol_reset(void);
+
+/*******************************************************************
+ Function:      protocol_feed
+ Description:   Supplies one received serial byte to the active decoder.
+ Parameters:    byte = received byte
+ Returns:       none
+ ******************************************************************/
+void protocol_feed(uint8_t byte);
+
+#endif

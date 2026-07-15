@@ -1,0 +1,28 @@
+/*******************************************************************
+ * File:        serial
+ * Purpose:     Serial-port and TickerV interface for SerMouse2.
+ * Author:      Gerph
+ ******************************************************************/
+
+#ifndef SERMOUSE2_SERIAL_H
+#define SERMOUSE2_SERIAL_H
+
+#include "kernel.h"
+
+/*******************************************************************
+ Function:      serial_enable
+ Description:   Configures, opens and starts polling the serial port.
+ Parameters:    pw = module private word
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+_kernel_oserror *serial_enable(void *pw);
+
+/*******************************************************************
+ Function:      serial_disable
+ Description:   Stops polling and closes the serial input stream.
+ Parameters:    pw = module private word
+ Returns:       none
+ ******************************************************************/
+void serial_disable(void *pw);
+
+#endif

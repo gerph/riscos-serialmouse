@@ -1,0 +1,236 @@
+/*******************************************************************
+ * File:        pointer
+ * Purpose:     PointerV implementation for the SerMouse2 driver.
+ * Author:      Gerph
+ ******************************************************************/
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+#include "riscos/Pointer.h"
+#include "riscos/Vectors.h"
+
+#include "modhead.h"
+#include "pointer.h"
+#include "serial.h"
+#include "state.h"
+
+#define KEYV_TRANSITION_UP 1
+#define KEYV_TRANSITION_DOWN 2
+#define KEYV_SELECT 0x70
+#define KEYV_MENU 0x71
+#define KEYV_ADJUST 0x72
+#define POINTER_EXT_RELATIVE -1
+
+struct pointer_record
+{
+    struct pointer_record *next;
+    uint32_t flags;
+    uint8_t type;
+    char name[31];
+};
+
+static const char microsoft_name[] = "Microsoft mouse";
+static const char msc_name[] = "Mouse Systems Corp mouse";
+
+/*******************************************************************
+ Function:      pointer_supports_type
+ Description:   Tests whether a pointer type belongs to this driver.
+ Parameters:    type = PointerV device type
+ Returns:       non-zero for a supported type
+ ******************************************************************/
+static int pointer_supports_type(int type)
+{
+    return type == PointerDevice_MicrosoftMouse ||
+           type == PointerDevice_MSCMouse;
+}
+
+/*******************************************************************
+ Function:      pointer_send_button
+ Description:   Reports one traditional button transition through KeyV.
+ Parameters:    changed = changed button bit
+                buttons = current button state
+                key = RISC OS low-level mouse key number
+ Returns:       none
+ ******************************************************************/
+static void pointer_send_button(uint8_t changed, uint8_t buttons, int key)
+{
+    int reason;
+
+    if ((changed & buttons) == 0)
+        reason = KEYV_TRANSITION_UP;
+    else
+        reason = KEYV_TRANSITION_DOWN;
+    _swix(OS_CallAVector, _INR(0, 9), reason, key, 0, 0, 0,
+          0, 0, 0, 0, KEYV);
+}
+
+/*******************************************************************
+ Function:      pointer_send_button_changes
+ Description:   Reports all changed traditional mouse buttons through KeyV.
+ Parameters:    buttons = current button state
+ Returns:       none
+ ******************************************************************/
+static void pointer_send_button_changes(uint8_t buttons)
+{
+    uint8_t changed;
+
+    changed = (uint8_t)(sermouse_state.last_buttons ^ buttons);
+    if (changed == 0)
+        return;
+    sermouse_state.last_buttons = buttons;
+    if ((changed & 0x04) != 0)
+        pointer_send_button(0x04, buttons, KEYV_SELECT);
+    if ((changed & 0x02) != 0)
+        pointer_send_button(0x02, buttons, KEYV_MENU);
+    if ((changed & 0x01) != 0)
+        pointer_send_button(0x01, buttons, KEYV_ADJUST);
+}
+
+/*******************************************************************
+ Function:      pointer_get_data
+ Description:   Obtains and clears accumulated relative movement.
+ Parameters:    x = returned X movement
+                y = returned Y movement
+                buttons = returned button state
+ Returns:       none
+ ******************************************************************/
+static void pointer_get_data(int32_t *x, int32_t *y, uint8_t *buttons)
+{
+    *x = sermouse_state.delta_x;
+    *y = sermouse_state.delta_y;
+    *buttons = sermouse_state.buttons;
+    sermouse_state.delta_x = 0;
+    sermouse_state.delta_y = 0;
+}
+
+/*******************************************************************
+ Function:      pointer_add_record
+ Description:   Adds one driver type record to a PointerV enumeration list.
+ Parameters:    list = existing record list
+                type = pointer device type
+                name = menu name
+ Returns:       new head of the record list, or the original list on failure
+ ******************************************************************/
+static struct pointer_record *pointer_add_record(struct pointer_record *list,
+                                                  uint8_t type,
+                                                  const char *name)
+{
+    struct pointer_record *record;
+
+    record = malloc(sizeof(*record));
+    if (record == NULL)
+        return list;
+    record->next = list;
+    record->flags = 0;
+    record->type = type;
+    strcpy(record->name, name);
+    return record;
+}
+
+/*******************************************************************
+ Function:      PointerV_Handler
+ Description:   Handles PointerV status, enumeration and selection requests.
+ Parameters:    r = PointerV register block
+                pw = module private word
+ Returns:       VECTOR_CLAIM for status requests, otherwise VECTOR_PASSON
+ ******************************************************************/
+int PointerV_Handler(_kernel_swi_regs *r, void *pw)
+{
+    int reason;
+    int type;
+    int32_t x;
+    int32_t y;
+    uint8_t buttons;
+    struct pointer_record *list;
+
+    reason = r->r[0];
+    type = r->r[1];
+    switch (reason)
+    {
+        case PointerReason_Request:
+            if (!pointer_supports_type(type))
+                return VECTOR_PASSON;
+            pointer_get_data(&x, &y, &buttons);
+            r->r[2] = x;
+            r->r[3] = y;
+            pointer_send_button_changes(buttons);
+            return VECTOR_CLAIM;
+
+        case PointerReason_ExtRequest:
+            if (!pointer_supports_type(type))
+                return VECTOR_PASSON;
+            pointer_get_data(&x, &y, &buttons);
+            r->r[0] = POINTER_EXT_RELATIVE;
+            r->r[2] = x;
+            r->r[3] = y;
+            r->r[4] = 0;
+            r->r[5] = 0;
+            r->r[6] = buttons;
+            return VECTOR_CLAIM;
+
+        case PointerReason_Identify:
+#ifdef __riscos64
+            /* PointerV enumeration has a legacy 32-bit record pointer. */
+            return VECTOR_PASSON;
+#else
+            list = (struct pointer_record *)r->r[1];
+            list = pointer_add_record(list, PointerDevice_MSCMouse, msc_name);
+            list = pointer_add_record(list, PointerDevice_MicrosoftMouse,
+                                      microsoft_name);
+            r->r[1] = (int)list;
+            return VECTOR_PASSON;
+#endif
+
+        case PointerReason_Selected:
+            if (pointer_supports_type(type))
+                serial_enable(pw);
+            else
+                serial_disable(pw);
+            return VECTOR_PASSON;
+    }
+    return VECTOR_PASSON;
+}
+
+/*******************************************************************
+ Function:      pointer_claim
+ Description:   Claims PointerV for the lifetime of the module.
+ Parameters:    pw = module private word
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+_kernel_oserror *pointer_claim(void *pw)
+{
+    return _swix(OS_Claim, _INR(0, 2), PointerV, PointerV_Entry, pw);
+}
+
+/*******************************************************************
+ Function:      pointer_release
+ Description:   Releases PointerV.
+ Parameters:    pw = module private word
+ Returns:       none
+ ******************************************************************/
+void pointer_release(void *pw)
+{
+    _swix(OS_Release, _INR(0, 2), PointerV, PointerV_Entry, pw);
+}
+
+/*******************************************************************
+ Function:      pointer_enable_selected
+ Description:   Enables the driver if the selected pointer type is supported.
+ Parameters:    pw = module private word
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+_kernel_oserror *pointer_enable_selected(void *pw)
+{
+    _kernel_oserror *err;
+    int type;
+
+    err = _swix(OS_Pointer, _IN(0) | _OUT(0), OSPointer_ReadMouseType,
+                &type);
+    if (err != NULL || !pointer_supports_type(type))
+        return err;
+    return serial_enable(pw);
+}

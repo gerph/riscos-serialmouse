@@ -1,0 +1,188 @@
+/*******************************************************************
+ * File:        serial
+ * Purpose:     Serial transport and TickerV processing for SerMouse2.
+ * Author:      Gerph
+ ******************************************************************/
+
+#include <stdint.h>
+#include <stdlib.h>
+
+#include "kernel.h"
+#include "swis.h"
+#include "riscos/Vectors.h"
+
+#include "modhead.h"
+#include "protocol.h"
+#include "serial.h"
+#include "state.h"
+
+#define SERIAL_OPEN_READ_MUSTOPEN 0x4c
+#define SERIAL_STATUS_EOR 0x00000036
+#define SERIAL_STATUS_AND 0xffffff00
+#define SERIAL_FORMAT_8N1 0x00000000
+#define SERIAL_BAUD_1200 4
+#define INVALID_FILE_HANDLE_ERROR 0x000000de
+#define SWI_FLAGS_OUTPUT (1U << 21)
+
+static const char serial_filename[] = "Devices:$.Serial";
+
+/*******************************************************************
+ Function:      serial_close
+ Description:   Closes the serial input stream if it is open.
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+static void serial_close(void)
+{
+    if (sermouse_state.serial_handle != 0)
+    {
+        _swix(OS_Find, _INR(0, 1), 0, sermouse_state.serial_handle);
+        sermouse_state.serial_handle = 0;
+    }
+}
+
+/*******************************************************************
+ Function:      serial_open
+ Description:   Opens the serial device for input.
+ Parameters:    none
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+static _kernel_oserror *serial_open(void)
+{
+    _kernel_oserror *err;
+    int handle;
+
+    err = _swix(OS_Find, _INR(0, 1) | _OUT(0),
+                SERIAL_OPEN_READ_MUSTOPEN, serial_filename, &handle);
+    if (err != NULL)
+        return err;
+
+    sermouse_state.serial_handle = handle;
+    return NULL;
+}
+
+/*******************************************************************
+ Function:      serial_configure
+ Description:   Configures the serial port as the original driver does.
+ Parameters:    none
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+static _kernel_oserror *serial_configure(void)
+{
+    _kernel_oserror *err;
+
+    err = _swix(OS_SerialOp, _INR(0, 2), 0,
+                SERIAL_STATUS_EOR, SERIAL_STATUS_AND);
+    if (err != NULL)
+        return err;
+
+    err = _swix(OS_SerialOp, _INR(0, 1), 1, SERIAL_FORMAT_8N1);
+    if (err != NULL)
+        return err;
+
+    return _swix(OS_SerialOp, _INR(0, 1), 5, SERIAL_BAUD_1200);
+}
+
+/*******************************************************************
+ Function:      serial_reopen_if_needed
+ Description:   Reopens the serial input after an external close.
+ Parameters:    pw = module private word
+ Returns:       none
+ ******************************************************************/
+static void serial_reopen_if_needed(void *pw)
+{
+    if (serial_open() != NULL)
+        serial_disable(pw);
+}
+
+/*******************************************************************
+ Function:      TickerV_Handler
+ Description:   Drains serial input on each centisecond TickerV call.
+ Parameters:    r = TickerV registers
+                pw = module private word
+ Returns:       VECTOR_PASSON
+ ******************************************************************/
+int TickerV_Handler(_kernel_swi_regs *r, void *pw)
+{
+    _kernel_oserror *err;
+    int eof;
+    int byte;
+    int flags;
+
+    (void)r;
+    if (sermouse_state.locked != 0 || sermouse_state.serial_handle == 0)
+        return VECTOR_PASSON;
+
+    sermouse_state.locked = 1;
+    for (;;)
+    {
+        eof = 0;
+        err = _swix(OS_Args, _INR(0, 1) | _OUT(2), 5,
+                    sermouse_state.serial_handle, &eof);
+        if (err != NULL)
+        {
+            if (err->errnum == INVALID_FILE_HANDLE_ERROR)
+                serial_reopen_if_needed(pw);
+            break;
+        }
+        if (eof != 0)
+            break;
+
+        flags = 0;
+        err = _swix(OS_BGet, _IN(1) | _OUT(0) | SWI_FLAGS_OUTPUT,
+                    sermouse_state.serial_handle, &byte, &flags);
+        if (err != NULL || (flags & _C) != 0)
+            break;
+        protocol_feed((uint8_t)byte);
+    }
+    sermouse_state.locked = 0;
+    return VECTOR_PASSON;
+}
+
+/*******************************************************************
+ Function:      serial_enable
+ Description:   Configures, opens and starts polling the serial port.
+ Parameters:    pw = module private word
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+_kernel_oserror *serial_enable(void *pw)
+{
+    _kernel_oserror *err;
+
+    if (sermouse_state.serial_handle != 0)
+        return NULL;
+
+    protocol_reset();
+    sermouse_state.locked = 0;
+    err = serial_configure();
+    if (err != NULL)
+        return err;
+    err = serial_open();
+    if (err != NULL)
+        return err;
+    err = _swix(OS_Claim, _INR(0, 2), TickerV, TickerV_Entry, pw);
+    if (err != NULL)
+    {
+        serial_close();
+        return err;
+    }
+    sermouse_state.ticker_claimed = 1;
+    return NULL;
+}
+
+/*******************************************************************
+ Function:      serial_disable
+ Description:   Stops polling and closes the serial input stream.
+ Parameters:    pw = module private word
+ Returns:       none
+ ******************************************************************/
+void serial_disable(void *pw)
+{
+    if (sermouse_state.ticker_claimed != 0)
+    {
+        _swix(OS_Release, _INR(0, 2), TickerV, TickerV_Entry, pw);
+        sermouse_state.ticker_claimed = 0;
+    }
+    serial_close();
+    sermouse_state.locked = 0;
+}

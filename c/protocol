@@ -1,0 +1,168 @@
+/*******************************************************************
+ * File:        protocol
+ * Purpose:     Microsoft and Mouse Systems serial mouse report decoders.
+ * Author:      Gerph
+ ******************************************************************/
+
+#include <stdint.h>
+
+#include "protocol.h"
+#include "state.h"
+
+#define MICROSOFT_HEADER_MASK 0xc0
+#define MICROSOFT_HEADER_VALUE 0xc0
+#define MICROSOFT_DATA_MASK 0xc0
+#define MICROSOFT_DATA_VALUE 0x80
+#define MSC_HEADER_MASK 0xf8
+#define MSC_HEADER_VALUE 0x80
+
+struct sermouse_state sermouse_state;
+
+/*******************************************************************
+ Function:      protocol_add_microsoft_report
+ Description:   Adds a completed three-byte Microsoft report.
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+static void protocol_add_microsoft_report(void)
+{
+    int32_t x;
+    int32_t y;
+    uint8_t buttons;
+
+    x = (int32_t)(int8_t)(((sermouse_state.byte1 & 0x03) << 6) |
+                          sermouse_state.byte2);
+    y = (int32_t)(int8_t)(((sermouse_state.byte1 & 0x0c) << 4) |
+                          sermouse_state.byte3);
+    buttons = (uint8_t)((sermouse_state.byte1 >> 3) | 0x09);
+    buttons = (uint8_t)(buttons & (buttons >> 1));
+    if ((buttons & 0x02) != 0)
+        buttons = (uint8_t)(buttons & ~0x05);
+
+    sermouse_state.delta_x += x;
+    sermouse_state.delta_y -= y;
+    sermouse_state.buttons = buttons;
+}
+
+/*******************************************************************
+ Function:      protocol_add_msc_report
+ Description:   Adds a completed five-byte Mouse Systems report.
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+static void protocol_add_msc_report(uint8_t fifth_byte)
+{
+    int32_t x;
+    int32_t y;
+
+    x = (int32_t)(int8_t)sermouse_state.byte2 +
+        (int32_t)(int8_t)sermouse_state.byte4;
+    y = (int32_t)(int8_t)sermouse_state.byte3 +
+        (int32_t)(int8_t)fifth_byte;
+
+    sermouse_state.delta_x += x;
+    sermouse_state.delta_y += y;
+    sermouse_state.buttons = sermouse_state.byte1;
+}
+
+/*******************************************************************
+ Function:      protocol_reset
+ Description:   Resets the report state machine and accumulated mouse data.
+ Parameters:    none
+ Returns:       none
+ ******************************************************************/
+void protocol_reset(void)
+{
+    sermouse_state.protocol_state = sermouse_idle;
+    sermouse_state.delta_x = 0;
+    sermouse_state.delta_y = 0;
+    sermouse_state.buttons = 0;
+    sermouse_state.last_buttons = 0;
+}
+
+/*******************************************************************
+ Function:      protocol_feed
+ Description:   Supplies one received serial byte to the active decoder.
+ Parameters:    byte = received byte
+ Returns:       none
+ ******************************************************************/
+void protocol_feed(uint8_t byte)
+{
+    switch (sermouse_state.protocol_state)
+    {
+        case sermouse_idle:
+            if ((byte & MSC_HEADER_MASK) == MSC_HEADER_VALUE)
+            {
+                sermouse_state.byte1 = (uint8_t)(byte ^ 0x87);
+                sermouse_state.protocol_state = sermouse_msc_byte2;
+            }
+            else if ((byte & MICROSOFT_HEADER_MASK) == MICROSOFT_HEADER_VALUE)
+            {
+                sermouse_state.byte1 = (uint8_t)(byte ^ MICROSOFT_HEADER_VALUE);
+                sermouse_state.protocol_state = sermouse_microsoft_byte2;
+            }
+            break;
+
+        case sermouse_microsoft_byte2:
+            if ((byte & MICROSOFT_DATA_MASK) != MICROSOFT_DATA_VALUE)
+            {
+                sermouse_state.protocol_state = sermouse_idle;
+                protocol_feed(byte);
+            }
+            else
+            {
+                sermouse_state.byte2 = (uint8_t)(byte ^ MICROSOFT_DATA_VALUE);
+                sermouse_state.protocol_state = sermouse_microsoft_byte3;
+            }
+            break;
+
+        case sermouse_microsoft_byte3:
+            if ((byte & MICROSOFT_DATA_MASK) != MICROSOFT_DATA_VALUE)
+            {
+                sermouse_state.protocol_state = sermouse_idle;
+                protocol_feed(byte);
+            }
+            else
+            {
+                sermouse_state.byte3 = (uint8_t)(byte ^ MICROSOFT_DATA_VALUE);
+                protocol_add_microsoft_report();
+                sermouse_state.protocol_state = sermouse_microsoft_byte4;
+            }
+            break;
+
+        case sermouse_microsoft_byte4:
+            if ((byte & MICROSOFT_DATA_MASK) != MICROSOFT_DATA_VALUE)
+            {
+                sermouse_state.protocol_state = sermouse_idle;
+                protocol_feed(byte);
+            }
+            else
+            {
+                sermouse_state.buttons = (uint8_t)
+                    ((sermouse_state.buttons & ~0x02) |
+                     (((byte ^ MICROSOFT_DATA_VALUE) >> 5) << 1));
+                sermouse_state.protocol_state = sermouse_idle;
+            }
+            break;
+
+        case sermouse_msc_byte2:
+            sermouse_state.byte2 = byte;
+            sermouse_state.protocol_state = sermouse_msc_byte3;
+            break;
+
+        case sermouse_msc_byte3:
+            sermouse_state.byte3 = byte;
+            sermouse_state.protocol_state = sermouse_msc_byte4;
+            break;
+
+        case sermouse_msc_byte4:
+            sermouse_state.byte4 = byte;
+            sermouse_state.protocol_state = sermouse_msc_byte5;
+            break;
+
+        case sermouse_msc_byte5:
+            protocol_add_msc_report(byte);
+            sermouse_state.protocol_state = sermouse_idle;
+            break;
+    }
+}

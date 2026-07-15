@@ -1,0 +1,36 @@
+/*******************************************************************
+ * File:        pointer
+ * Purpose:     PointerV interface for the SerMouse2 driver.
+ * Author:      Gerph
+ ******************************************************************/
+
+#ifndef SERMOUSE2_POINTER_H
+#define SERMOUSE2_POINTER_H
+
+#include "kernel.h"
+
+/*******************************************************************
+ Function:      pointer_claim
+ Description:   Claims PointerV for the lifetime of the module.
+ Parameters:    pw = module private word
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+_kernel_oserror *pointer_claim(void *pw);
+
+/*******************************************************************
+ Function:      pointer_release
+ Description:   Releases PointerV.
+ Parameters:    pw = module private word
+ Returns:       none
+ ******************************************************************/
+void pointer_release(void *pw);
+
+/*******************************************************************
+ Function:      pointer_enable_selected
+ Description:   Enables the driver if the current pointer type is supported.
+ Parameters:    pw = module private word
+ Returns:       NULL on success, otherwise an OS error
+ ******************************************************************/
+_kernel_oserror *pointer_enable_selected(void *pw);
+
+#endif

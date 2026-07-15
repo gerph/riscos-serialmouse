@@ -1,0 +1,42 @@
+/*******************************************************************
+ * File:        state
+ * Purpose:     Shared state for the serial transport and mouse protocols.
+ * Author:      Gerph
+ ******************************************************************/
+
+#ifndef SERMOUSE2_STATE_H
+#define SERMOUSE2_STATE_H
+
+#include <stdint.h>
+
+enum sermouse_protocol_state
+{
+    sermouse_idle,
+    sermouse_microsoft_byte2,
+    sermouse_microsoft_byte3,
+    sermouse_microsoft_byte4,
+    sermouse_msc_byte2,
+    sermouse_msc_byte3,
+    sermouse_msc_byte4,
+    sermouse_msc_byte5
+};
+
+struct sermouse_state
+{
+    int serial_handle;
+    int ticker_claimed;
+    int locked;
+    enum sermouse_protocol_state protocol_state;
+    int32_t delta_x;
+    int32_t delta_y;
+    uint8_t buttons;
+    uint8_t last_buttons;
+    uint8_t byte1;
+    uint8_t byte2;
+    uint8_t byte3;
+    uint8_t byte4;
+};
+
+extern struct sermouse_state sermouse_state;
+
+#endif
